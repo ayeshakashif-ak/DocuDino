@@ -42,11 +42,18 @@ def create_app(config_class=None):
     # Configure CORS to allow requests from frontend
     CORS(app, 
          resources={
-             r"/api/*": {
-                 "origins": ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
-                 "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        r"/api/*": {
+                 "origins": [
+                     "http://localhost:5173", 
+                     "http://localhost:3000", 
+                     "http://localhost:3001",  # Vite dev server port
+                     "http://127.0.0.1:5173",
+                     "http://127.0.0.1:3000",
+                     "http://127.0.0.1:3001"
+                 ],
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
                  "allow_headers": ["Content-Type", "Authorization"]
-             }
+        }
          },
          supports_credentials=True)
     

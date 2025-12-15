@@ -62,8 +62,19 @@ export interface MFAVerifyResponse {
 }
 
 // Create axios instance with increased timeout for slow connections
+// Use proxy in development (Vite proxies /api to backend) or direct URL
+const getBaseURL = () => {
+  // In development, use the proxy if available, otherwise use direct URL
+  if (import.meta.env.DEV) {
+    // Try to use proxy first (works when Vite dev server is running)
+    return import.meta.env.VITE_API_URL || '/api';
+  }
+  // In production, use the configured API URL
+  return import.meta.env.VITE_API_URL || 'http://localhost:5002/api';
+};
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5002/api',
+  baseURL: getBaseURL(),
   headers: {
     'Content-Type': 'application/json',
   },
@@ -75,23 +86,84 @@ const api = axios.create({
 export const authApi = {
   register: async (data: { email: string; password: string; firstName: string; lastName: string }): Promise<RegisterResponse> => {
     try {
-      console.log('Sending registration request:', data);
-      const response = await api.post<ApiResponse>('/auth/register', data);
-      console.log('Registration response:', response.data);
+      console.log('[API] Sending registration request:', { ...data, password: '[REDACTED]' });
       
-      if (!response.data.token || !response.data.user) {
-        throw new Error('Invalid response format from server');
-      }
+      // Create a specific longer timeout for registration requests
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, 30000); // 30 second hard timeout
       
-      return {
-        token: response.data.token,
-        user: response.data.user
-      };
-    } catch (error) {
-      console.error('Registration error:', error);
-      if (axios.isAxiosError(error)) {
-        throw new Error(error.response?.data?.error || 'Registration failed');
+      try {
+        const response = await api.post<ApiResponse>('/auth/register', data, {
+          timeout: 30000, // Timeout for axios
+          signal: controller.signal // Abort controller signal
+        });
+        
+        // Clear the timeout since the request completed
+        clearTimeout(timeoutId);
+        
+        console.log('[API] Registration response:', response.data);
+        
+        // Check if there's an error in the response
+        if (response.data.error) {
+          console.error('[API] Registration error in response:', response.data.error);
+          throw new Error(response.data.error);
+        }
+        
+        if (!response.data.token || !response.data.user) {
+          console.error('[API] Invalid response format:', response.data);
+          throw new Error('Invalid response format from server. Missing token or user data.');
+        }
+        
+        return {
+          token: response.data.token,
+          user: response.data.user
+        };
+      } catch (requestError) {
+        // Clear the timeout to prevent memory leaks
+        clearTimeout(timeoutId);
+        throw requestError;
       }
+    } catch (error: any) {
+      console.error('[API] Registration error:', error);
+      
+      // Detect timeout errors specifically
+      if (error.name === 'AbortError' || (axios.isAxiosError(error) && error.code === 'ECONNABORTED')) {
+        console.error('[API] Registration request timed out');
+        throw new Error('Registration request timed out. The server is taking too long to respond. Please try again.');
+      } else if (error.name === 'NetworkError' || (axios.isAxiosError(error) && !error.response)) {
+        // Check for various network error conditions
+        if (axios.isAxiosError(error)) {
+          if (error.code === 'ECONNREFUSED' || error.code === 'ERR_NETWORK') {
+            console.error('[API] Network error - connection refused or network unavailable');
+            throw new Error('Cannot connect to server. Please check if the backend server is running and try again.');
+          } else if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
+            console.error('[API] Network error - connection timeout');
+            throw new Error('Connection timeout. Please check your internet connection and try again.');
+          } else {
+            console.error('[API] Network error - no internet connection');
+            throw new Error('Network error. Please check your internet connection and try again.');
+          }
+        } else {
+          throw new Error('Network error. Please check your internet connection and try again.');
+        }
+      } else if (axios.isAxiosError(error)) {
+        // Handle server response errors
+        if (error.response) {
+          const errorMessage = error.response.data?.error || error.response.data?.message || `Server error (${error.response.status})`;
+          console.error('[API] Error details:', {
+            status: error.response.status,
+            data: error.response.data,
+            message: errorMessage
+          });
+          throw new Error(errorMessage);
+        } else {
+          // No response but axios error
+          throw new Error(error.message || 'Registration failed. Please try again.');
+        }
+      }
+      // For non-Axios errors, re-throw as-is
       throw error;
     }
   },
@@ -519,6 +591,22 @@ api.interceptors.response.use(
   },
   async (error) => {
     console.error('Response error:', error);
+    
+    // Handle network errors before checking for 401
+    if (axios.isAxiosError(error) && !error.response) {
+      // Network error - no response from server
+      if (error.code === 'ECONNREFUSED' || error.code === 'ERR_NETWORK') {
+        console.error('[Interceptor] Connection refused or network unavailable');
+        return Promise.reject(new Error('Cannot connect to server. Please check if the backend server is running.'));
+      } else if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+        console.error('[Interceptor] Request timeout');
+        return Promise.reject(new Error('Request timed out. Please try again.'));
+      } else {
+        console.error('[Interceptor] Network error:', error.message);
+        return Promise.reject(new Error('Network error. Please check your internet connection.'));
+      }
+    }
+    
     const originalRequest = error.config;
 
     if (error.response?.status === 401 && !originalRequest._retry) {

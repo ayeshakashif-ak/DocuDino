@@ -7,7 +7,7 @@ from flask_jwt_extended import (
 )
 from app import db
 from app.models import User, BlacklistedToken, MFASession
-from app.utils.auth_utils import validate_password, validate_email, validate_username
+from app.utils.auth_utils import validate_password, validate_email, validate_username, register_user
 from app.utils.security_utils import log_audit_event, require_mfa
 from app.utils.mfa_utils import create_mfa_session
 
@@ -19,62 +19,41 @@ auth_bp = Blueprint('auth', __name__)
 
 @auth_bp.route('/register', methods=['POST'])
 def register():
-    """Register a new user."""
-    data = request.get_json()
-    
-    # Validate input
-    if not data:
-        return jsonify({"error": "No input data provided"}), 400
-    
-    username = data.get('username')
-    email = data.get('email')
-    password = data.get('password')
-    
-    # Validate required fields
-    if not all([username, email, password]):
-        return jsonify({"error": "Username, email, and password are required"}), 400
-    
-    # Validate username format
-    if not validate_username(username):
-        return jsonify({"error": "Invalid username format. Username must be 3-64 characters and contain only letters, numbers, and underscores."}), 400
-    
-    # Validate email format
-    if not validate_email(email):
-        return jsonify({"error": "Invalid email format"}), 400
-    
-    # Validate password strength
-    password_validation = validate_password(password)
-    if not password_validation['valid']:
-        return jsonify({"error": password_validation['message']}), 400
-    
-    # Check if username already exists
-    if User.query.filter_by(username=username).first():
-        return jsonify({"error": "Username already exists"}), 409
-    
-    # Check if email already exists
-    if User.query.filter_by(email=email).first():
-        return jsonify({"error": "Email already exists"}), 409
-    
-    # Create new user
+    """Register a new user using Firebase Firestore."""
     try:
-        # Get optional role, defaulting to 'user'
-        role = data.get('role', 'user')
-        # Only allow 'user' role during registration, admins must be created separately
-        if role != 'user':
-            role = 'user'
+        # Check if request has JSON content
+        if not request.is_json:
+            logger.warning("Registration request missing JSON content type")
+            return jsonify({"error": "Content-Type must be application/json"}), 400
+        
+        data = request.get_json()
+        
+        if not data:
+            logger.warning("Registration request with empty data")
+            return jsonify({"error": "No input data provided"}), 400
+        
+        logger.info(f"Registration request received: {list(data.keys())}")
+        
+        # Use the Firebase-based registration function
+        response_data, status_code = register_user(data)
+        
+        logger.info(f"Registration response status: {status_code}")
+        
+        # Return the response (both success and error cases)
+        return jsonify(response_data), status_code
             
-        new_user = User(username=username, email=email, password=password, role=role)
-        db.session.add(new_user)
-        db.session.commit()
-        
-        logger.info(f"New user registered: {username}")
-        
-        return jsonify({"message": "User registered successfully", "user_id": new_user.id}), 201
-    
     except Exception as e:
-        db.session.rollback()
-        logger.error(f"Error registering user: {e}")
-        return jsonify({"error": "Error registering user"}), 500
+        logger.error(f"Unexpected error in register route: {str(e)}", exc_info=True)
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        # Return more detailed error in development
+        error_message = str(e)
+        if current_app.config.get('DEBUG'):
+            return jsonify({
+                "error": f"Registration failed: {error_message}",
+                "traceback": traceback.format_exc()
+            }), 500
+        return jsonify({"error": f"Registration failed: {error_message}"}), 500
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
