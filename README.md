@@ -70,14 +70,41 @@ DocuDino serves various industries where identity verification and document vali
 
 ## Getting Started
 
+### Quick Setup
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/ayeshakashif-ak/DocuDino.git
+   cd DocuDino
+   ```
+
+2. **Set up the Backend**
+   - See [backend/SETUP.md](backend/SETUP.md) for detailed instructions
+   - Install dependencies: `cd backend && pip install -r requirements.txt`
+   - Add your Firebase service account JSON file to `backend/` directory
+   - Run: `python app.py`
+
+3. **Set up the Frontend**
+   - Copy `frontend/src/config/firebase.ts.example` to `frontend/src/config/firebase.ts`
+   - Fill in your Firebase Web App config values
+   - Install dependencies: `cd frontend && npm install`
+   - Run: `npm run dev`
+
 ### Prerequisites
 
-Ensure you have the following installed before running the project locally:
+- **Python 3.11+** for backend
+- **Node.js 14+** and npm for frontend
+- **Firebase account** and project (for authentication and database)
+- **PostgreSQL** (optional, SQLite used by default for development)
 
-- Python 3.x or later
-- PostgreSQL for database management
-- TensorFlow or PyTorch (depending on the AI model choice)
-- OpenCV for real-time face recognition
-- Flask/Django for backend API
+### Firebase Setup
+
+**Important:** You need to set up Firebase credentials to run the app:
+
+1. **Backend:** Download Firebase service account JSON from [Firebase Console](https://console.firebase.google.com/) → Project Settings → Service Accounts
+2. **Frontend:** Get Web App config from Firebase Console → Project Settings → Your apps
+
+See [backend/SETUP.md](backend/SETUP.md) for detailed Firebase setup instructions.
+
 ---
 This project is developed as part of **Secure Software Development and Engineering – CY-321** at **Ghulam Ishaq Khan Institute of Engineering Sciences and Technology**.
