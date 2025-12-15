@@ -35,7 +35,7 @@ FIREBASE_CREDENTIALS_PATH = _find_firebase_credentials()
 # CRITICAL: Firebase is REQUIRED - fail fast if not configured
 if not FIREBASE_CREDENTIALS_PATH:
     print("=" * 80)
-    print("❌ ERROR: Firebase credentials file not found!")
+    print("[ERROR] Firebase credentials file not found!")
     print("=" * 80)
     print("\nFirebase is REQUIRED for this application to work.")
     print("\nTo set up Firebase:")
@@ -55,7 +55,7 @@ if not FIREBASE_CREDENTIALS_PATH:
     )
 
 if not os.path.exists(FIREBASE_CREDENTIALS_PATH):
-    print(f"❌ ERROR: Firebase credentials file not found at: {FIREBASE_CREDENTIALS_PATH}")
+    print(f"[ERROR] Firebase credentials file not found at: {FIREBASE_CREDENTIALS_PATH}")
     raise FileNotFoundError(
         f"Firebase credentials file not found at: {FIREBASE_CREDENTIALS_PATH}. "
         "Please check the file path and try again."
@@ -66,11 +66,11 @@ try:
     cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
     firebase_admin.initialize_app(cred)
     db = firestore.client()
-    print(f"✅ Firebase initialized successfully with: {FIREBASE_CREDENTIALS_PATH}")
-    print(f"✅ Connected to Firebase project: {cred.project_id}")
+    print(f"[SUCCESS] Firebase initialized successfully with: {FIREBASE_CREDENTIALS_PATH}")
+    print(f"[SUCCESS] Connected to Firebase project: {cred.project_id}")
 except Exception as e:
     print("=" * 80)
-    print(f"❌ CRITICAL ERROR: Failed to initialize Firebase!")
+    print(f"[CRITICAL ERROR] Failed to initialize Firebase!")
     print("=" * 80)
     print(f"Error: {e}")
     print("\nPlease check:")
