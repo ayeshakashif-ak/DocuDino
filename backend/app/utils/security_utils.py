@@ -3,9 +3,9 @@ Security utilities for audit logging and secure operations.
 """
 import hashlib
 import json
+from datetime import datetime
 from flask import request, current_app, g
-from app import db
-from app.models import AuditLog
+from app.firebase import get_firestore
 
 def log_audit_event(action, user_id=None, resource_type=None, resource_id=None,
                     details=None, status="success"):
@@ -14,9 +14,9 @@ def log_audit_event(action, user_id=None, resource_type=None, resource_id=None,
     
     Args:
         action (str): The action being performed (e.g., "login", "access_document")
-        user_id (int, optional): User ID performing the action
+        user_id (str, optional): User ID performing the action
         resource_type (str, optional): Type of resource being acted upon
-        resource_id (int, optional): ID of resource being acted upon
+        resource_id (str, optional): ID of resource being acted upon
         details (dict, optional): Additional details about the action
         status (str, optional): Status of the action (success, failure)
     """
@@ -38,20 +38,21 @@ def log_audit_event(action, user_id=None, resource_type=None, resource_id=None,
             details_str = str(details)
             
     # Create log entry
-    log = AuditLog(
-        user_id=user_id,
-        action=action,
-        resource_type=resource_type,
-        resource_id=resource_id,
-        details=details_str,
-        ip_address=request.remote_addr if request else None,
-        user_agent=request.user_agent.string if request and request.user_agent else None,
-        status=status
-    )
+    log_data = {
+        'user_id': user_id,
+        'action': action,
+        'resource_type': resource_type,
+        'resource_id': resource_id,
+        'details': details_str,
+        'ip_address': request.remote_addr if request else None,
+        'user_agent': request.user_agent.string if request and request.user_agent else None,
+        'status': status,
+        'timestamp': datetime.utcnow()
+    }
     
-    # Add to session and commit
-    db.session.add(log)
-    db.session.commit()
+    # Add to Firestore
+    db = get_firestore()
+    db.collection('audit_logs').add(log_data)
     
     # Log to application logs if enabled
     if current_app.config.get('SECURITY_LOG_TO_STDOUT', False):
@@ -59,7 +60,7 @@ def log_audit_event(action, user_id=None, resource_type=None, resource_id=None,
                                f"Resource: {resource_type}:{resource_id} | "
                                f"Status: {status}")
     
-    return log
+    return log_data
 
 def compute_document_hash(document_data):
     """
@@ -101,20 +102,23 @@ def require_mfa(view_function):
     """
     from functools import wraps
     from flask_jwt_extended import get_jwt_identity
-    from app.models import User, MFASession
     
     @wraps(view_function)
     def decorated(*args, **kwargs):
         # Get current user from JWT
         current_user_id = get_jwt_identity()
-        user = User.query.get(current_user_id)
+        db = get_firestore()
         
-        if not user:
+        # Get user document
+        user_doc = db.collection('users').document(current_user_id).get()
+        if not user_doc.exists:
             return {"error": "User not found"}, 404
         
+        user_data = user_doc.to_dict()
+        
         # Check if MFA is required
-        if user.requires_mfa():
-            # Check for MFA session token
+        if user_data.get('mfa_enabled', False):
+            # Check for MFA token header
             mfa_token = request.headers.get('X-MFA-TOKEN')
             if not mfa_token:
                 return {
@@ -122,22 +126,38 @@ def require_mfa(view_function):
                     "requires_mfa": True
                 }, 403
                 
-            # Verify MFA session
-            session = MFASession.query.filter_by(
-                token=mfa_token,
-                user_id=current_user_id,
-                used=False
-            ).first()
+            # Get the user's MFA secret
+            mfa_secret = None
+            if user_data.get('mfa_secret'):
+                from app.models import decrypt_data
+                mfa_secret = decrypt_data(user_data['mfa_secret'])
             
-            if not session or session.is_expired():
+            if not mfa_secret:
                 return {
-                    "error": "Invalid or expired MFA session",
+                    "error": "MFA configuration error",
+                    "requires_mfa": True
+                }, 403
+            
+            # Verify MFA token directly
+            import pyotp
+            totp = pyotp.TOTP(mfa_secret)
+            
+            # Check if token is valid (allow for some clock drift)
+            if not totp.verify(mfa_token, valid_window=1):
+                return {
+                    "error": "Invalid MFA token",
                     "requires_mfa": True
                 }, 403
                 
-            # Mark session as used
-            session.mark_used()
-            db.session.commit()
+            # Log successful MFA use
+            log_audit_event(
+                action="mfa_verification_success",
+                user_id=current_user_id,
+                resource_type="endpoint",
+                resource_id=request.path,
+                details="MFA verified for sensitive endpoint",
+                status="success"
+            )
         
         # If MFA not required or verification successful, proceed
         return view_function(*args, **kwargs)

@@ -3,7 +3,9 @@ Security middleware for Flask application.
 """
 import uuid
 from functools import wraps
-from flask import g, request, current_app
+from flask import g, request, current_app, jsonify
+import jwt
+from app.firebase import db
 
 class SecurityMiddleware:
     """
@@ -93,3 +95,50 @@ def rate_limit(limit=100, per=60):
             return f(*args, **kwargs)
         return decorated_function
     return decorator
+
+
+def token_required(f):
+    """
+    Decorator to protect routes that require authentication.
+    Verifies the JWT token in the Authorization header and
+    attaches the current user to the request.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        
+        # Get token from Authorization header
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+        
+        if not token:
+            return jsonify({'message': 'Authorization token is missing'}), 401
+            
+        try:
+            # Decode the token using the secret key
+            payload = jwt.decode(
+                token, 
+                current_app.config['SECRET_KEY'],
+                algorithms=['HS256']
+            )
+            
+            # Get the user from Firebase
+            user_ref = db.collection('users').document(payload['uid'])
+            user_doc = user_ref.get()
+            
+            if not user_doc.exists:
+                return jsonify({'message': 'User not found'}), 401
+                
+            current_user = user_doc.to_dict()
+            current_user['uid'] = user_doc.id
+            
+        except jwt.ExpiredSignatureError:
+            return jsonify({'message': 'Token has expired'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'message': 'Invalid token'}), 401
+        
+        # Pass the current_user to the route function
+        return f(current_user=current_user, *args, **kwargs)
+        
+    return decorated

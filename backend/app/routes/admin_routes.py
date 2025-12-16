@@ -1,10 +1,10 @@
 import logging
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from app import db
-from app.models import User, VerificationProfile
+from app.firebase import get_firestore
 from app.utils.auth_utils import role_required
 from app.utils.security_utils import log_audit_event, require_mfa
+from app.models import RoleEnum
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -12,25 +12,59 @@ logger = logging.getLogger(__name__)
 # Create blueprint
 admin_bp = Blueprint('admin', __name__)
 
+def get_firestore_client():
+    """Get Firestore client instance."""
+    return get_firestore()
+
 @admin_bp.route('/dashboard', methods=['GET'])
 @jwt_required()
 @role_required('admin')
 def admin_dashboard():
     """Admin dashboard with system statistics."""
     try:
+        db = get_firestore_client()
+        
+        # Get users collection
+        users_ref = db.collection('users')
+        users = users_ref.get()
+        
+        # Get verification profiles collection
+        verifications_ref = db.collection('verification_profiles')
+        verifications = verifications_ref.get()
+        
+        # Initialize counters
+        total_users = 0
+        active_users = 0
+        pending_verifications = 0
+        verified_users = 0
+        rejected_users = 0
+        admin_count = 0
+        user_count = 0
+        verifier_count = 0
+        
         # Count statistics
-        total_users = User.query.count()
-        active_users = User.query.filter_by(is_active=True).count()
+        for user in users:
+            user_data = user.to_dict()
+            total_users += 1
+            if user_data.get('is_active', True):
+                active_users += 1
+            if user_data.get('role') == RoleEnum.ADMIN.value:
+                admin_count += 1
+            elif user_data.get('role') == RoleEnum.USER.value:
+                user_count += 1
+            elif user_data.get('role') == RoleEnum.VERIFIER.value:
+                verifier_count += 1
         
-        # Verification stats
-        pending_verifications = VerificationProfile.query.filter_by(verification_status='pending').count()
-        verified_users = VerificationProfile.query.filter_by(verification_status='verified').count()
-        rejected_users = VerificationProfile.query.filter_by(verification_status='rejected').count()
-        
-        # User role distribution
-        admin_count = User.query.filter_by(role='admin').count()
-        user_count = User.query.filter_by(role='user').count()
-        verifier_count = User.query.filter_by(role='verifier').count()
+        # Count verification stats
+        for verification in verifications:
+            verification_data = verification.to_dict()
+            status = verification_data.get('verification_status')
+            if status == 'pending':
+                pending_verifications += 1
+            elif status == 'verified':
+                verified_users += 1
+            elif status == 'rejected':
+                rejected_users += 1
         
         return jsonify({
             "user_stats": {
@@ -55,7 +89,7 @@ def admin_dashboard():
         logger.error(f"Error in admin dashboard: {e}")
         return jsonify({"error": "Failed to load admin dashboard data"}), 500
 
-@admin_bp.route('/users/<int:user_id>', methods=['PUT'])
+@admin_bp.route('/users/<string:user_id>', methods=['PUT'])
 @jwt_required()
 @role_required('admin')
 @require_mfa
@@ -68,125 +102,103 @@ def update_user(user_id):
         return jsonify({"error": "No input data provided"}), 400
     
     try:
-        user = User.query.get(user_id)
-        if not user:
+        db = get_firestore_client()
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+        
+        if not user_doc.exists:
             log_audit_event(
-                action="admin_update_user",
                 user_id=current_admin_id,
+                action="admin_update_user",
                 resource_type="user",
                 resource_id=user_id,
                 status="failure",
-                details={"reason": "User not found"}
+                details="User not found"
             )
             return jsonify({"error": "User not found"}), 404
         
+        user_data = user_doc.to_dict()
+        
         # Log the admin action
         log_audit_event(
-            action="admin_update_user_initiated",
             user_id=current_admin_id,
+            action="admin_update_user_initiated",
             resource_type="user",
             resource_id=user_id,
             details={"changed_fields": list(data.keys())}
         )
         
         # Update fields if they exist in the request
+        updates = {}
+        
         if 'email' in data:
             # Check if email already exists for another user
-            existing_user = User.query.filter_by(email=data['email']).first()
-            if existing_user and existing_user.id != user_id:
+            email_query = db.collection('users').where('email', '==', data['email']).limit(1).get()
+            if email_query and email_query[0].id != user_id:
                 log_audit_event(
-                    action="admin_update_user",
                     user_id=current_admin_id,
+                    action="admin_update_user",
                     resource_type="user",
                     resource_id=user_id,
                     status="failure",
                     details={"reason": "Email already in use", "attempted_email": data['email']}
                 )
                 return jsonify({"error": "Email already in use"}), 409
-            old_email = user.email
-            user.email = data['email']
-            log_audit_event(
-                action="admin_changed_user_email",
-                user_id=current_admin_id,
-                resource_type="user",
-                resource_id=user_id,
-                details={"old_email": old_email, "new_email": data['email']}
-            )
+            updates['email'] = data['email']
         
         if 'username' in data:
             # Check if username already exists for another user
-            existing_user = User.query.filter_by(username=data['username']).first()
-            if existing_user and existing_user.id != user_id:
+            username_query = db.collection('users').where('username', '==', data['username']).limit(1).get()
+            if username_query and username_query[0].id != user_id:
                 log_audit_event(
-                    action="admin_update_user",
                     user_id=current_admin_id,
+                    action="admin_update_user",
                     resource_type="user",
                     resource_id=user_id,
                     status="failure",
                     details={"reason": "Username already in use", "attempted_username": data['username']}
                 )
                 return jsonify({"error": "Username already in use"}), 409
-            old_username = user.username
-            user.username = data['username']
-            log_audit_event(
-                action="admin_changed_user_username",
-                user_id=current_admin_id,
-                resource_type="user",
-                resource_id=user_id,
-                details={"old_username": old_username, "new_username": data['username']}
-            )
+            updates['username'] = data['username']
         
         if 'role' in data:
             # Validate role
-            if data['role'] not in ['admin', 'user', 'verifier']:
+            if data['role'] not in [role.value for role in RoleEnum]:
                 log_audit_event(
-                    action="admin_update_user",
                     user_id=current_admin_id,
+                    action="admin_update_user",
                     resource_type="user",
                     resource_id=user_id,
                     status="failure",
                     details={"reason": "Invalid role", "attempted_role": data['role']}
                 )
                 return jsonify({"error": "Invalid role"}), 400
-            old_role = user.role
-            user.role = data['role']
-            log_audit_event(
-                action="admin_changed_user_role",
-                user_id=current_admin_id,
-                resource_type="user",
-                resource_id=user_id,
-                details={"old_role": old_role, "new_role": data['role']}
-            )
+            updates['role'] = data['role']
         
         if 'is_active' in data:
-            old_status = user.is_active
-            user.is_active = bool(data['is_active'])
-            log_audit_event(
-                action="admin_changed_user_status",
-                user_id=current_admin_id,
-                resource_type="user",
-                resource_id=user_id,
-                details={"old_status": old_status, "new_status": user.is_active}
-            )
+            updates['is_active'] = bool(data['is_active'])
         
-        db.session.commit()
+        # Apply updates
+        if updates:
+            user_ref.update(updates)
         
         log_audit_event(
-            action="admin_update_user_success",
             user_id=current_admin_id,
+            action="admin_update_user_success",
             resource_type="user",
             resource_id=user_id
         )
         
-        return jsonify({"message": "User updated successfully", "user": user.to_dict()}), 200
+        # Get updated user data
+        updated_user = user_ref.get().to_dict()
+        return jsonify({"message": "User updated successfully", "user": updated_user}), 200
     
     except Exception as e:
-        db.session.rollback()
         logger.error(f"Error updating user: {e}")
         
         log_audit_event(
-            action="admin_update_user",
             user_id=current_admin_id,
+            action="admin_update_user",
             resource_type="user",
             resource_id=user_id,
             status="failure",
@@ -195,7 +207,7 @@ def update_user(user_id):
         
         return jsonify({"error": "Failed to update user"}), 500
 
-@admin_bp.route('/users/<int:user_id>', methods=['DELETE'])
+@admin_bp.route('/users/<string:user_id>', methods=['DELETE'])
 @jwt_required()
 @role_required('admin')
 @require_mfa
@@ -204,50 +216,57 @@ def delete_user(user_id):
     current_admin_id = get_jwt_identity()
     
     try:
-        user = User.query.get(user_id)
-        if not user:
+        db = get_firestore_client()
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+        
+        if not user_doc.exists:
             log_audit_event(
-                action="admin_delete_user",
                 user_id=current_admin_id,
+                action="admin_delete_user",
                 resource_type="user",
                 resource_id=user_id,
                 status="failure",
-                details={"reason": "User not found"}
+                details="User not found"
             )
             return jsonify({"error": "User not found"}), 404
         
         # Check if admin is trying to delete themselves
         if user_id == current_admin_id:
             log_audit_event(
-                action="admin_delete_user",
                 user_id=current_admin_id,
+                action="admin_delete_user",
                 resource_type="user",
                 resource_id=user_id,
                 status="failure",
-                details={"reason": "Cannot delete self"}
+                details="Cannot delete self"
             )
             return jsonify({"error": "Cannot delete your own account"}), 403
         
+        user_data = user_doc.to_dict()
+        
         # Log the delete attempt
         log_audit_event(
-            action="admin_delete_user_initiated",
             user_id=current_admin_id,
+            action="admin_delete_user_initiated",
             resource_type="user",
             resource_id=user_id,
-            details={"username": user.username, "email": user.email, "role": user.role}
+            details={"username": user_data['username'], "email": user_data['email'], "role": user_data['role']}
         )
         
-        # Delete all verification profiles
-        VerificationProfile.query.filter_by(user_id=user_id).delete()
+        # Delete verification profiles
+        verifications_ref = db.collection('verification_profiles')
+        verifications = verifications_ref.where('user_id', '==', user_id).get()
+        for verification in verifications:
+            verification.reference.delete()
         
         # Delete user
-        db.session.delete(user)
-        db.session.commit()
+        user_ref.delete()
         
         # Log successful deletion
         log_audit_event(
-            action="admin_delete_user_success",
             user_id=current_admin_id,
+            action="admin_delete_user_success",
             resource_type="user",
             resource_id=user_id
         )
@@ -255,12 +274,11 @@ def delete_user(user_id):
         return jsonify({"message": "User deleted successfully"}), 200
     
     except Exception as e:
-        db.session.rollback()
         logger.error(f"Error deleting user: {e}")
         
         log_audit_event(
-            action="admin_delete_user",
             user_id=current_admin_id,
+            action="admin_delete_user",
             resource_type="user",
             resource_id=user_id,
             status="failure",
