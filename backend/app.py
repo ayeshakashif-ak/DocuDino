@@ -1,7 +1,14 @@
-from app import app
-import os
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return "Backend is running!"
+
+@app.route('/health')
+def health():
+    return "OK", 200
 
 if __name__ == "__main__":
-    debug_mode = os.environ.get("FLASK_ENV", "development") == "development"
-    # Binding to 0.0.0.0 allows connections from any IP
-    app.run(host="0.0.0.0", port=5002, debug=False)
+    app.run(host="0.0.0.0", port=5000)
