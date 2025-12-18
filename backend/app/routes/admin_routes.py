@@ -1,11 +1,10 @@
 import logging
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from app import db
 from app.firebase import get_firestore
 from app.utils.auth_utils import role_required
 from app.utils.security_utils import log_audit_event, require_mfa
-from app.models import RoleEnum, User
+from app.models import RoleEnum
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -257,51 +256,3 @@ def delete_user(user_id):
         )
         
         return jsonify({"error": "Failed to delete user"}), 500
-
-@admin_bp.route('/users', methods=['POST'])
-@jwt_required()
-@role_required('admin')
-def create_user():
-    """Create a new user (admin only)."""
-    data = request.get_json()
-    
-    if not data:
-        return jsonify({"error": "No input data provided"}), 400
-    
-    # Validate required fields
-    if not all(k in data for k in ['username', 'email', 'password']):
-        return jsonify({"error": "Username, email, and password are required"}), 400
-    
-    # Check if username already exists
-    if User.query.filter_by(username=data['username']).first():
-        return jsonify({"error": "Username already exists"}), 409
-    
-    # Check if email already exists
-    if User.query.filter_by(email=data['email']).first():
-        return jsonify({"error": "Email already exists"}), 409
-    
-    try:
-        # Create new user
-        role = data.get('role', 'user')
-        if role not in ['admin', 'user', 'verifier']:
-            return jsonify({"error": "Invalid role"}), 400
-        
-        new_user = User(
-            username=data['username'],
-            email=data['email'],
-            password=data['password'],
-            role=role
-        )
-        
-        if 'is_active' in data:
-            new_user.is_active = bool(data['is_active'])
-        
-        db.session.add(new_user)
-        db.session.commit()
-        
-        return jsonify({"message": "User created successfully", "user": new_user.to_dict()}), 201
-    
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Error creating user: {e}")
-        return jsonify({"error": "Failed to create user"}), 500
