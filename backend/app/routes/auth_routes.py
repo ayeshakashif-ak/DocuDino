@@ -7,7 +7,12 @@ from flask_jwt_extended import (
 )
 from app import db
 from app.models import User, BlacklistedToken, MFASession
-from app.utils.auth_utils import validate_password, validate_email, validate_username, register_user
+from app.utils.auth_utils import (
+    validate_password,
+    validate_email,
+    validate_username,
+    register_user,
+)
 from app.utils.security_utils import log_audit_event, require_mfa
 from app.utils.mfa_utils import create_mfa_session
 
@@ -57,130 +62,72 @@ def register():
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
-    """Login a user."""
+    """Login a user via Firestore."""
+    from app.firebase import get_firestore
+    from werkzeug.security import check_password_hash
+    
     data = request.get_json()
     
     if not data:
         return jsonify({"error": "No input data provided"}), 400
     
-    # Get login credentials
-    username_or_email = data.get('username') or data.get('email')
+    email = data.get('email')
     password = data.get('password')
-    mfa_token = data.get('mfa_token')  # Optional MFA token
     
-    if not username_or_email or not password:
-        return jsonify({"error": "Username/email and password are required"}), 400
-    
-    # Check if login is via username or email
-    if '@' in username_or_email:
-        user = User.query.filter_by(email=username_or_email).first()
-    else:
-        user = User.query.filter_by(username=username_or_email).first()
-    
-    # Verify user exists and password is correct
-    if not user or not user.check_password(password):
-        # Log failed login attempt
-        log_audit_event(
-            action="login_attempt",
-            user_id=user.id if user else None,
-            status="failure",
-            details={"reason": "Invalid credentials", "username_or_email": username_or_email}
-        )
-        return jsonify({"error": "Invalid credentials"}), 401
-    
-    # Check if user is active
-    if not user.is_active:
-        log_audit_event(
-            action="login_attempt",
-            user_id=user.id,
-            status="failure",
-            details={"reason": "Account deactivated"}
-        )
-        return jsonify({"error": "Account is deactivated. Please contact admin."}), 403
+    if not email or not password:
+        return jsonify({"error": "Email and password are required"}), 400
     
     try:
-        # Check if MFA is required for this user
-        requires_mfa = user.requires_mfa()
+        db = get_firestore()
+        users_ref = db.collection('users')
         
-        # If MFA is required but no token provided
-        if requires_mfa and not mfa_token:
-            # Return early with MFA required flag
-            return jsonify({
-                "message": "MFA required",
-                "requires_mfa": True,
-                "user_id": user.id,
-                "temp_access_token": create_access_token(
-                    identity=user.id,
-                    additional_claims={"role": user.role, "mfa_required": True},
-                    expires_delta=current_app.config.get('MFA_TOKEN_VALIDITY', 300)
-                )
-            }), 200
+        # Find user by email
+        user_query = users_ref.where('email', '==', email).get()
         
-        # If MFA is required and token is provided, verify it
-        if requires_mfa and mfa_token:
-            # Verify MFA session
-            session = MFASession.query.filter_by(
-                token=mfa_token,
-                user_id=user.id,
-                used=False
-            ).first()
-            
-            if not session or session.is_expired():
-                log_audit_event(
-                    action="mfa_verification",
-                    user_id=user.id,
-                    status="failure",
-                    details={"reason": "Invalid or expired MFA token"}
-                )
-                return jsonify({
-                    "error": "Invalid or expired MFA token",
-                    "requires_mfa": True
-                }), 403
-            
-            # Mark session as used
-            session.mark_used()
+        if not user_query:
+            logger.warning(f"Login failed: user not found for {email}")
+            return jsonify({"error": "Invalid email or password"}), 401
         
-        # Update last login time
-        user.update_last_login()
-        db.session.commit()
+        user_doc = user_query[0]
+        user_data = user_doc.to_dict()
         
-        # Create access and refresh tokens
+        # Verify password
+        if not check_password_hash(user_data['password'], password):
+            logger.warning(f"Login failed: invalid password for {email}")
+            return jsonify({"error": "Invalid email or password"}), 401
+        
+        # Generate access token
         access_token = create_access_token(
-            identity=user.id,
-            additional_claims={"role": user.role}
+            identity=user_doc.id,
+            additional_claims={"role": user_data.get('role', 'user')}
         )
-        refresh_token = create_refresh_token(identity=user.id)
         
         # Log successful login
         log_audit_event(
-            action="login_success",
-            user_id=user.id,
-            details={"mfa_used": requires_mfa}
+            user_id=user_doc.id,
+            action='login',
+            details='User logged in successfully',
+            status='success'
         )
         
+        logger.info(f"Login successful for {email}")
         return jsonify({
             "message": "Login successful",
+            "token": access_token,
             "access_token": access_token,
-            "refresh_token": refresh_token,
             "user": {
-                "id": user.id,
-                "username": user.username,
-                "email": user.email,
-                "role": user.role,
-                "mfa_enabled": user.mfa_enabled
+                "id": user_doc.id,
+                "email": user_data.get('email'),
+                "firstName": user_data.get('firstName', ''),
+                "lastName": user_data.get('lastName', ''),
+                "role": user_data.get('role', 'user'),
+                "mfa_enabled": user_data.get('mfa_enabled', False)
             }
         }), 200
     
     except Exception as e:
-        db.session.rollback()
-        logger.error(f"Error during login: {e}")
-        log_audit_event(
-            action="login_attempt",
-            user_id=user.id if user else None,
-            status="failure",
-            details={"reason": "Server error", "error": str(e)}
-        )
-        return jsonify({"error": "Login process failed"}), 500
+        logger.error(f"Login error: {str(e)}", exc_info=True)
+        return jsonify({"error": "Login failed"}), 500
 
 @auth_bp.route('/refresh', methods=['POST'])
 @jwt_required(refresh=True)
@@ -231,19 +178,35 @@ def logout():
 @auth_bp.route('/me', methods=['GET'])
 @jwt_required()
 def get_user_profile():
-    """Get the current user's profile."""
+    """Get the current user's profile from Firestore."""
+    from app.firebase import get_firestore
+    
     try:
         current_user_id = get_jwt_identity()
-        user = User.query.get(current_user_id)
+        db = get_firestore()
         
-        if not user:
+        user_doc = db.collection('users').document(current_user_id).get()
+        
+        if not user_doc.exists:
+            logger.warning(f"User profile not found for {current_user_id}")
             return jsonify({"error": "User not found"}), 404
         
-        return jsonify({"user": user.to_dict()}), 200
+        user_data = user_doc.to_dict()
+        return jsonify({
+            "user": {
+                "id": user_doc.id,
+                "email": user_data.get('email'),
+                "firstName": user_data.get('firstName', ''),
+                "lastName": user_data.get('lastName', ''),
+                "role": user_data.get('role', 'user'),
+                "mfa_enabled": user_data.get('mfa_enabled', False)
+            }
+        }), 200
     
     except Exception as e:
-        logger.error(f"Error fetching user profile: {e}")
+        logger.error(f"Error fetching user profile: {str(e)}", exc_info=True)
         return jsonify({"error": "Failed to retrieve user profile"}), 500
+
 
 @auth_bp.route('/protected', methods=['GET'])
 @jwt_required()
