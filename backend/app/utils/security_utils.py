@@ -1,7 +1,6 @@
 """
 Security utilities for audit logging and secure operations.
 """
-import hashlib
 import json
 from datetime import datetime
 from flask import request, current_app, g
@@ -61,38 +60,6 @@ def log_audit_event(action, user_id=None, resource_type=None, resource_id=None,
                                f"Status: {status}")
     
     return log_data
-
-def compute_document_hash(document_data):
-    """
-    Compute a secure hash of document data for integrity verification.
-    
-    Args:
-        document_data (bytes or str): Document data to hash
-        
-    Returns:
-        str: SHA-256 hash of the data
-    """
-    if isinstance(document_data, str):
-        document_data = document_data.encode()
-        
-    return hashlib.sha256(document_data).hexdigest()
-
-def verify_document_integrity(document_data, stored_hash):
-    """
-    Verify document integrity by comparing hashes.
-    
-    Args:
-        document_data (bytes or str): Document data to verify
-        stored_hash (str): Previously stored hash
-        
-    Returns:
-        bool: True if the document is verified, False otherwise
-    """
-    if not document_data or not stored_hash:
-        return False
-        
-    current_hash = compute_document_hash(document_data)
-    return current_hash == stored_hash
 
 def require_mfa(view_function):
     """

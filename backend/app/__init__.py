@@ -115,9 +115,5 @@ def create_app(config_class=None):
             # Re-raise the exception so we can see what's wrong
             raise
     
+    logger.info("Application initialized successfully")
     return app
-
-# Create the Flask application instance
-app = create_app()
-
-logger.info("Application initialized successfully")
