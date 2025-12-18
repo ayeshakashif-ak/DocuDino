@@ -25,23 +25,7 @@ def dashboard():
             return jsonify({"error": "User not found"}), 404
         
         user_data = user_doc.to_dict()
-        
-        # Get verification status
-        verification_doc = db.collection('verification_profiles').where('user_id', '==', current_user_id).limit(1).get()
-        verification_profile = verification_doc[0].to_dict() if verification_doc else None
-        verification_status = verification_profile.get('verification_status', 'not_submitted') if verification_profile else "not_submitted"
-        
-        # Build dashboard data
-        data = {
-            "user": user_data,
-            "verification_status": verification_status,
-            "has_verification_profile": verification_profile is not None
-        }
-        
-        if verification_profile:
-            data["verification_profile"] = verification_profile
-        
-        return jsonify(data), 200
+        return jsonify({"user": user_data}), 200
     
     except Exception as e:
         logger.error(f"Error in dashboard: {e}")

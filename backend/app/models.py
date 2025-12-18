@@ -66,24 +66,6 @@ USER_SCHEMA = {
     'session_tokens': list
 }
 
-VERIFICATION_PROFILE_SCHEMA = {
-    'user_id': str,
-    'full_name': str,  # Encrypted
-    'id_type': str,  # Encrypted
-    'id_number': str,  # Encrypted
-    'date_of_birth': datetime,
-    'verification_status': str,  # pending, verified, rejected
-    'verification_notes': str,
-    'created_at': datetime,
-    'verified_at': datetime,
-    'verified_by_admin_id': str,
-    'document_hash': str,
-    'risk_score': float,
-    'id_document_front': str,  # Encrypted base64 image
-    'id_document_back': str,  # Encrypted base64 image
-    'selfie_image': str  # Encrypted base64 image
-}
-
 MFA_SESSION_SCHEMA = {
     'user_id': str,
     'token': str,
@@ -131,24 +113,6 @@ def create_user_document(data):
     document.setdefault('login_attempts', 0)
     document.setdefault('security_questions', [])
     document.setdefault('session_tokens', [])
-    
-    return document
-
-def create_verification_profile_document(data):
-    """Create a new verification profile document with proper encryption."""
-    document = {}
-    for field, field_type in VERIFICATION_PROFILE_SCHEMA.items():
-        if field in data:
-            if field in ['full_name', 'id_type', 'id_number']:
-                document[field] = encrypt_data(data[field])
-            elif field in ['id_document_front', 'id_document_back', 'selfie_image']:
-                document[field] = encrypt_data(data[field]) if data[field] else None
-            else:
-                document[field] = data[field]
-    
-    # Set default values for required fields
-    document.setdefault('verification_status', 'pending')
-    document.setdefault('created_at', datetime.utcnow())
     
     return document
 

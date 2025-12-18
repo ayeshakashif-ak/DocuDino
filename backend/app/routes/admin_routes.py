@@ -1,10 +1,11 @@
 import logging
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
+from app import db
 from app.firebase import get_firestore
 from app.utils.auth_utils import role_required
 from app.utils.security_utils import log_audit_event, require_mfa
-from app.models import RoleEnum
+from app.models import RoleEnum, User
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -28,16 +29,9 @@ def admin_dashboard():
         users_ref = db.collection('users')
         users = users_ref.get()
         
-        # Get verification profiles collection
-        verifications_ref = db.collection('verification_profiles')
-        verifications = verifications_ref.get()
-        
         # Initialize counters
         total_users = 0
         active_users = 0
-        pending_verifications = 0
-        verified_users = 0
-        rejected_users = 0
         admin_count = 0
         user_count = 0
         verifier_count = 0
@@ -55,28 +49,11 @@ def admin_dashboard():
             elif user_data.get('role') == RoleEnum.VERIFIER.value:
                 verifier_count += 1
         
-        # Count verification stats
-        for verification in verifications:
-            verification_data = verification.to_dict()
-            status = verification_data.get('verification_status')
-            if status == 'pending':
-                pending_verifications += 1
-            elif status == 'verified':
-                verified_users += 1
-            elif status == 'rejected':
-                rejected_users += 1
-        
         return jsonify({
             "user_stats": {
                 "total": total_users,
                 "active": active_users,
                 "inactive": total_users - active_users
-            },
-            "verification_stats": {
-                "pending": pending_verifications,
-                "verified": verified_users,
-                "rejected": rejected_users,
-                "total": pending_verifications + verified_users + rejected_users
             },
             "role_distribution": {
                 "admin": admin_count,
@@ -254,12 +231,6 @@ def delete_user(user_id):
             details={"username": user_data['username'], "email": user_data['email'], "role": user_data['role']}
         )
         
-        # Delete verification profiles
-        verifications_ref = db.collection('verification_profiles')
-        verifications = verifications_ref.where('user_id', '==', user_id).get()
-        for verification in verifications:
-            verification.reference.delete()
-        
         # Delete user
         user_ref.delete()
         
@@ -334,34 +305,3 @@ def create_user():
         db.session.rollback()
         logger.error(f"Error creating user: {e}")
         return jsonify({"error": "Failed to create user"}), 500
-
-@admin_bp.route('/pending-verifications', methods=['GET'])
-@jwt_required()
-@role_required(['admin', 'verifier'])
-def get_pending_verifications():
-    """Get all pending verification requests."""
-    try:
-        page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 10, type=int)
-        
-        # Get paginated verification profiles
-        pagination = VerificationProfile.query.filter_by(verification_status='pending') \
-            .paginate(page=page, per_page=per_page)
-        
-        profiles = []
-        for profile in pagination.items:
-            user = User.query.get(profile.user_id)
-            profile_data = profile.to_dict()
-            profile_data['user'] = user.to_dict() if user else None
-            profiles.append(profile_data)
-        
-        return jsonify({
-            "verification_profiles": profiles,
-            "total": pagination.total,
-            "pages": pagination.pages,
-            "page": page
-        }), 200
-    
-    except Exception as e:
-        logger.error(f"Error fetching verification profiles: {e}")
-        return jsonify({"error": "Failed to retrieve verification profiles"}), 500
